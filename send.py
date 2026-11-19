@@ -1,48 +1,51 @@
 """
-"Send" client (STARTER CODE).
+"Send" client (IMPROVED).
 
-Prompts you for the details of one asset, then registers it with the
-server. The server must already be running (start server.py first).
+Prompts you for the details of one asset, checks them, then registers it
+with the server. The server must already be running (start server.py first).
 
     python send.py
 
-Deliberately basic: there is almost no validation of what you type in
-before it is sent. Improving that is part of the assignment.
-
-If you run this by double-clicking the file (rather than from an
-already-open terminal), Windows closes the console the instant the
-script finishes — too fast to read the server's response. The pause at
-the end of main() below keeps the window open until you press Enter;
-running the script from a terminal you already have open does not need
-it.
+Improvements over the starter code:
+  - empty answers are rejected and the question is asked again
+  - the asset ID must match the format AST-0001
+  - category and status are chosen from numbered lists (no typos)
+  - the client checks the ID is not already in use before sending
+  - a summary is shown and the user confirms before anything is sent
+  - friendly messages replace error tracebacks
 """
 
-import datetime  # used to stamp each new asset with today's date
-import socket    # provides the networking building blocks (sockets)
+import datetime
 
-# Import the shared constants/helpers used by every part of the prototype.
-from common import HOST, PORT, receive_message, send_message
+from client_utils import (
+    CATEGORIES,
+    STATUSES,
+    ask,
+    ask_asset_id,
+    choose,
+    confirm,
+    get_assets,
+    send_request,
+)
 
 
-def prompt_for_asset() -> dict:
+def prompt_for_asset(existing_ids: set) -> dict:
     """Ask the user for each field of a new asset record."""
     print("Enter the details of the new asset:")
 
-    # input() prints the given prompt, waits for the user to type a line
-    # and press Enter, then returns what they typed as a string.
-    # .strip() removes any accidental leading/trailing spaces.
-    asset_id = input("  Asset ID (e.g. AST-0001): ").strip()
-    description = input("  Description (e.g. Dell Latitude 5440 laptop): ").strip()
-    category = input("  Category (e.g. IT Equipment): ").strip()
-    location = input("  Location (e.g. Site A - IT Store): ").strip()
-    status = input("  Status (e.g. In Use): ").strip()
+    # Keep asking for an ID until it is not one the server already has.
+    while True:
+        asset_id = ask_asset_id()
+        if asset_id in existing_ids:
+            print(f"  {asset_id} is already in use. Please choose a different ID.")
+        else:
+            break
 
-    # TODO (student): this does not check that the fields above were
-    # actually filled in, or that asset_id is not already in use.
+    description = ask("  Description (e.g. Dell Latitude 5440 laptop): ")
+    category = choose("  Category:", CATEGORIES)
+    location = ask("  Location (e.g. Site A - IT Store): ")
+    status = choose("  Status:", STATUSES)
 
-    # Build and return the asset as a dict, matching what the server and
-    # receive.py expect. date_registered is filled in automatically
-    # rather than asked for, using today's date in YYYY-MM-DD format.
     return {
         "asset_id": asset_id,
         "description": description,
@@ -53,33 +56,42 @@ def prompt_for_asset() -> dict:
     }
 
 
+def register_asset() -> None:
+    """Collect an asset from the user and send it to the server."""
+    # Fetch the current assets first so we can spot duplicate IDs.
+    assets = get_assets()
+    if assets is None:
+        return  # a message has already been printed (e.g. server not running)
+    existing_ids = {a.get("asset_id") for a in assets}
+
+    new_asset = prompt_for_asset(existing_ids)
+
+    # Show a summary and let the user back out before anything is sent.
+    print("\nPlease check the details:")
+    for field, value in new_asset.items():
+        print(f"  {field}: {value}")
+    if not confirm("\nRegister this asset?"):
+        print("Cancelled - nothing was sent.")
+        return
+
+    response = send_request({"action": "REGISTER", "asset": new_asset})
+    if response is None:
+        return
+    if response.get("status") == "OK":
+        print(f"Success: asset {new_asset['asset_id']} was registered.")
+    else:
+        print("The server rejected the asset:", response.get("detail"))
+
+
 def main() -> None:
-    # Ask the user for the asset details before we even open a connection.
-    new_asset = prompt_for_asset()
-
-    # Create a TCP/IPv4 socket. `with` closes it automatically on exit.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        # Connect to the server at the shared HOST/PORT.
-        sock.connect((HOST, PORT))
-
-        # Send a REGISTER request containing the new asset.
-        send_message(sock, {"action": "REGISTER", "asset": new_asset})
-
-        # Wait for, and decode, the server's reply.
-        response = receive_message(sock)
-
-        # Show the raw reply so the user can see what the server did.
-        print("Server response:", response)
+    register_asset()
 
 
 # Only run this if the file is executed directly (not imported).
 if __name__ == "__main__":
-    main()
     try:
-        # Keep the console window open until the user presses Enter, so
-        # the output above doesn't disappear immediately (see the module
-        # docstring for why this matters on Windows).
+        main()
         input("\nPress Enter to close...")
-    except EOFError:
-        # No keyboard attached (e.g. run non-interactively) - just exit.
-        pass
+    except (EOFError, KeyboardInterrupt):
+        # Input ended or the user pressed Ctrl+C - just exit quietly.
+        print()
