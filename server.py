@@ -17,12 +17,76 @@ of the assignment.
 """
 
 import socket  # provides the networking building blocks (sockets)
+import json    # used to save and load assets reccords in a json file 
 
 # Import the shared constants/helpers used by every part of the prototype.
 from common import HOST, PORT, receive_message, send_message
 
 assets = []  # in-memory "database" of registered assets (a plain list of dicts)
+ASSET_FILE = "assets.json" #file to permanently store the assets
 
+def save_assets():
+    """save the assets to a json file"""
+
+    #opens file in write mode and saves to asset list
+    with open(ASSET_FILE, "w") as f:
+        json.dump(assets, f, indent=4)
+
+def load_assets():
+    """ loads previously saved assest from json file """
+
+    try:
+        #opens json file and loads saved assets 
+        with open(ASSET_FILE, "r") as file:
+            return json.load(file)
+
+    except FileNotFoundError:
+        #if the file does not exists it returns an empty list
+        return []
+
+def validate_asset(asset):
+    """ check that an asset contains all of the required info"""
+
+    #List of fields that every asset must have 
+    required_fields = [
+        "asset_id",
+        "description",
+        "category",
+        "location",
+        "status",
+        "date_registered"
+    ]
+
+    #make sure thit the asset recieved from the client is a dictionary
+    if not isinstance(asset, dict):
+        return False, "Invalid asset data" 
+
+    #check each field exists and has a value
+    for field in required_fields:
+
+        #check that the field is actually included in the asset
+        if field not in asset:
+            return False, f"Missing field: {field}"
+
+        #check that the field has not been left empty
+        if not asset[field]:
+            return False,f"{field} CANNOT BE EMPTY"
+
+    #if all checks have passed , the asset is valid
+    return True,""
+
+def asset_id_exists(asset_id):
+    """ this is to check if an asset with the same ID has been registered before"""
+
+    #go thru each asset stored
+    for asset in assets:
+
+        #check if the if the ID already exists
+        if asset["asset_id"] == asset_id:
+            return True
+
+    #no matching ASSET ID was found
+    return False
 
 def handle_client(conn: socket.socket) -> None:
     # `with conn:` guarantees the connection is closed automatically once
@@ -44,10 +108,36 @@ def handle_client(conn: socket.socket) -> None:
             # Pull the asset details out of the request.
             asset = request.get("asset")
 
-            # TODO (student): validate `asset` properly before storing it
-            # (e.g. required fields present, sensible types, no duplicate
-            # asset_id) and decide what should happen if it is invalid.
+            #check that the asset contains all of the required information
+            valid, error_message = validate_asset(asset)
+
+            if not valid:
+                send_message(
+                    conn,
+                    {
+                        "status": "ERROR",
+                        "detail": error_message
+                    }
+                )
+                return
+
+            #check if ID has been registered
+            if asset_id_exists(asset["asset_id"]):
+                send_message(
+                    conn,
+                    {
+                        "status": "ERROR",
+                        "detail": f"ASSET ID {asset['asset_id']} ALREADY EXISTS"
+                    }
+                )
+                return
+
+           # has passed all checks 
             assets.append(asset)  # add it to the in-memory list
+
+            save_assets() #saves the updated asset
+
+
 
             # Tell the client the registration succeeded, and echo back
             # what was stored so it can be confirmed on screen.
@@ -57,12 +147,109 @@ def handle_client(conn: socket.socket) -> None:
             # Send back the full current list of assets as-is.
             send_message(conn, {"status": "OK", "assets": assets})
 
+        elif action == "UPDATE":
+            #gets the updated asset info sent by client
+            updated_asset= request.get("asset")
+
+            #checks that updated asset has all required info
+            valid, error_message = validate_asset(updated_asset)
+
+            if not valid:
+                send_message(
+                    conn,
+                    {
+                        "status": "ERROR",
+                        "detail": error_message
+                    }
+                )
+                return 
+
+            #look through the stored assets for the matching ASST ID
+            for asset in assets:
+                if asset["asset_id"] == updated_asset["asset_id"]:
+
+                    #replace old info with the updated info
+                    asset.update(updated_asset)
+
+                    #save changes to assets.json
+                    save_assets()
+
+                    #tells client that update was successful
+                    send_message(
+                        conn,
+                        {
+                            "status": "OK",
+                            "detail": "ASSET UPDATED SUCCESSFULLY",
+                        
+                        }
+                    )
+                    return
+            #if no matching asset ID was found - sends an error
+            send_message(
+                conn,
+                {
+                    "status": "ERROR",
+                    "detail": f"ASSET ID {updated_asset['asset_id']} NOT FOUND"
+                }
+            )
+
+
+        elif action == "DELETE":
+            #get the Asset ID that the client wants to delete
+            asset_id = request.get("asset_id")
+
+            #checks that asset id was actually provided
+            if not asset_id:
+                send_message(
+                    conn,
+                    {
+                        "status": "ERROR",
+                        "detail": "ASSET ID IS REQUIRED"
+                    }
+                )
+                return
+
+            #Looks thru the stored assets for matching ID
+            for asset in assets:
+                if asset["asset_id"] == asset_id:
+
+                    #removes the asset from the list
+                    assets.remove(asset)
+
+                    #save changes to assets.json
+                    save_assets()
+
+                    #tells client that deletion was successful
+                    send_message(
+                        conn,
+                        {
+                            "status": "OK",
+                            "detail": "DELETION SUCCESSFUL"
+                        }
+                    )
+                    return
+
+                #If no match is found - sends and error
+            send_message(
+                conn,
+                {
+                    "status": "ERROR",
+                    "detail": f"ASSET ID {asset_id} NOT FOUND"
+                }
+            )
+
+
         else:
             # Any action we don't recognise is treated as an error.
             send_message(conn, {"status": "ERROR", "detail": f"Unknown action: {action!r}"})
 
 
 def main() -> None:
+    global assets
+
+    #loads previously saved assets when server starts
+    assets = load_assets()
+
     # Create a TCP/IPv4 socket. `with` closes it automatically on exit.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
         # Allow the port to be reused immediately after the server stops,
